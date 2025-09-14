@@ -53,7 +53,7 @@ export function mapPostgresToMysqlType(
 ): string {
   const typeMap: Record<string, string> = {
     'bigint': 'BIGINT',
-    'integer': 'INT',
+    'integer': 'BIGINT', // Changed from INT to BIGINT for better compatibility
     'smallint': 'SMALLINT',
     'boolean': 'BOOLEAN',
     'text': 'TEXT',
@@ -89,6 +89,48 @@ export async function createMysqlSchema(connections: DatabaseConnections): Promi
     tableStructures[col.table_name]!.push(col);
   });
 
+  // Disable foreign key checks to allow dropping tables with constraints
+  await connections.mysqlConnection.execute('SET FOREIGN_KEY_CHECKS = 0;');
+
+  // Get list of existing tables first
+  const [existingTablesResult] = await connections.mysqlConnection.execute(`SHOW TABLES`);
+  const existingTables = (existingTablesResult as any[]).map(row => Object.values(row)[0]);
+
+  // Drop all foreign key constraints first
+  if (existingTables.length > 0) {
+    console.log('🔗 Dropping foreign key constraints...');
+    for (const tableName of existingTables) {
+      try {
+        const [fkResult] = await connections.mysqlConnection.execute(`
+          SELECT CONSTRAINT_NAME 
+          FROM information_schema.KEY_COLUMN_USAGE 
+          WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = '${tableName}' 
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+        `);
+        
+        const foreignKeys = (fkResult as any[]).map(row => row.CONSTRAINT_NAME);
+        for (const fkName of foreignKeys) {
+          await connections.mysqlConnection.execute(`ALTER TABLE \`${tableName}\` DROP FOREIGN KEY \`${fkName}\``);
+        }
+      } catch (error) {
+        // Ignore errors when dropping foreign keys
+        console.log(`⚠️ Could not drop foreign keys from ${tableName}: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  // Drop all tables first (including any we might have missed)
+  console.log('🗑️ Dropping existing tables...');
+  for (const tableName of existingTables) {
+    await connections.mysqlConnection.execute(`DROP TABLE IF EXISTS \`${tableName}\`;`);
+  }
+  
+  // Also drop tables from PostgreSQL list in case there are differences
+  for (const tableName of tables) {
+    await connections.mysqlConnection.execute(`DROP TABLE IF EXISTS \`${tableName}\`;`);
+  }
+
   for (const tableName of tables) {
     console.log(`📝 Creating table: ${tableName}`);
 
@@ -98,17 +140,21 @@ export async function createMysqlSchema(connections: DatabaseConnections): Promi
       continue;
     }
 
-    // Drop table if exists
-    await connections.mysqlConnection.execute(`DROP TABLE IF EXISTS \`${tableName}\`;`);
-
     // Build CREATE TABLE statement
     const columns = tableStructure.map(col => {
-      const mysqlType = mapPostgresToMysqlType(
+      let mysqlType = mapPostgresToMysqlType(
         col.data_type,
         col.character_maximum_length,
         col.numeric_precision,
         col.numeric_scale
       );
+      
+      // Ensure all ID and foreign key columns use BIGINT for consistency
+      if (col.column_name === 'id' || col.column_name.endsWith('_id')) {
+        if (mysqlType === 'INT' || mysqlType === 'INTEGER') {
+          mysqlType = 'BIGINT';
+        }
+      }
 
       const nullable = col.is_nullable === 'YES' ? 'NULL' : 'NOT NULL';
       const defaultValue = col.column_default ?
@@ -132,10 +178,38 @@ export async function createMysqlSchema(connections: DatabaseConnections): Promi
     try {
       await connections.mysqlConnection.execute(createTableSQL);
       console.log(`✅ Created table: ${tableName}`);
+      
+      // Verify table was created
+      const [result] = await connections.mysqlConnection.execute(`SHOW TABLES LIKE '${tableName}'`);
+      if ((result as any[]).length === 0) {
+        console.error(`❌ Table ${tableName} was not created successfully`);
+      }
     } catch (error) {
       console.error(`❌ Failed to create table ${tableName}:`, (error as Error).message);
       console.log('SQL:', createTableSQL);
+      
+      // Check if this is a foreign key constraint issue
+      if ((error as Error).message.includes('foreign key constraint')) {
+        console.log('⚠️ Foreign key constraint issue detected. Continuing with other tables...');
+        continue; // Continue with other tables
+      } else {
+        throw error; // Stop migration if it's a different error
+      }
     }
+  }
+
+  // Keep foreign key checks disabled for data migration phase
+  // await connections.mysqlConnection.execute('SET FOREIGN_KEY_CHECKS = 1;');
+  console.log('ℹ️ Keeping foreign key checks disabled for data migration phase');
+  
+  // Verify all tables were created
+  const [mysqlTables] = await connections.mysqlConnection.execute(`SHOW TABLES`);
+  const createdTables = (mysqlTables as any[]).map(row => Object.values(row)[0]);
+  console.log(`✅ Schema creation completed - ${createdTables.length}/${tables.length} tables created`);
+  
+  if (createdTables.length !== tables.length) {
+    const missingTables = tables.filter(table => !createdTables.includes(table));
+    console.warn(`⚠️  Missing tables: ${missingTables.join(', ')}`);
   }
 }
 
@@ -161,6 +235,15 @@ export async function migrateData(connections: DatabaseConnections): Promise<voi
 
       // Disable foreign key checks temporarily
       await connections.mysqlConnection.execute('SET FOREIGN_KEY_CHECKS = 0;');
+
+      // Clear existing data to avoid duplicates
+      await connections.mysqlConnection.execute(`DELETE FROM \`${tableName}\``);
+      
+      // Reset auto increment if the table has an id column
+      const hasIdColumn = rows.length > 0 && 'id' in rows[0]!;
+      if (hasIdColumn) {
+        await connections.mysqlConnection.execute(`ALTER TABLE \`${tableName}\` AUTO_INCREMENT = 1`);
+      }
 
       // Get column names
       const columns = Object.keys(rows[0]!);
@@ -226,6 +309,20 @@ export async function validateMigration(connections: DatabaseConnections): Promi
 
   for (const tableName of tables) {
     try {
+      // Check if table exists in MySQL first
+      const [tableExists] = await connections.mysqlConnection.execute(`SHOW TABLES LIKE '${tableName}'`);
+      if ((tableExists as any[]).length === 0) {
+        console.error(`❌ Table ${tableName} does not exist in MySQL`);
+        validationResults.push({
+          table: tableName,
+          postgresCount: 'ERROR',
+          mysqlCount: 'ERROR',
+          isValid: false,
+          error: `Table does not exist in MySQL`
+        });
+        continue;
+      }
+
       // Count rows in both databases
       const pgCountResult = await connections.pgClient.query(`SELECT COUNT(*) as count FROM "${tableName}"`);
       const pgCount = parseInt((pgCountResult.rows[0] as { count: string }).count);
@@ -301,6 +398,10 @@ export async function runMigration(): Promise<void> {
 
     // Generate report
     const report = await generateReport(validationResults);
+
+    // Re-enable foreign key checks at the end of migration
+    console.log('🔧 Re-enabling foreign key checks...');
+    await connections.mysqlConnection.execute('SET FOREIGN_KEY_CHECKS = 1;');
 
     console.log('=====================================');
     console.log('🎉 Migration completed!');
