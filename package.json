@@ -12,8 +12,7 @@
     "validate:dev": "ts-node src/validate.ts",
     "report": "ts-node -r dotenv/config src/generate-report.ts",
     "report:dev": "ts-node src/generate-report.ts",
-    "type-check": "tsc --noEmit",
-    "lint": "eslint src/**/*.ts --fix"
+    "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
@@ -21,14 +20,9 @@
     "pg": "^8.11.3"
   },
   "devDependencies": {
-    "@eslint/js": "^9.8.0",
-    "@types/cli-progress": "^3.11.5",
     "@types/mysql2": "github:types/mysql2",
     "@types/node": "^20.0.0",
     "@types/pg": "^8.15.5",
-    "@typescript-eslint/eslint-plugin": "^7.18.0",
-    "@typescript-eslint/parser": "^7.18.0",
-    "eslint": "^8.57.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
   },
