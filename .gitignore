@@ -1,0 +1,7 @@
+# Add .env to .gitignore to avoid committing sensitive data
+.env
+dist/
+node_modules/
+*.log
+logs/
+reports/

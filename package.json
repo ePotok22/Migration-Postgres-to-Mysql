@@ -1,0 +1,45 @@
+{
+  "name": "postgres-to-mysql-migration",
+  "version": "1.0.0",
+  "description": "Migration script to transfer data from PostgreSQL to MySQL",
+  "main": "dist/src/migrate.js",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "migrate": "npm run build && node dist/src/migrate.js",
+    "migrate:dev": "ts-node src/migrate.ts",
+    "validate": "npm run build && node dist/src/validate.js",
+    "validate:dev": "ts-node src/validate.ts",
+    "report": "ts-node -r dotenv/config src/generate-report.ts",
+    "report:dev": "ts-node src/generate-report.ts",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src/**/*.ts --fix"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "mysql2": "^3.6.5",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.8.0",
+    "@types/cli-progress": "^3.11.5",
+    "@types/mysql2": "github:types/mysql2",
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.15.5",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "postgresql",
+    "mysql",
+    "migration",
+    "database",
+    "typescript"
+  ]
+}
